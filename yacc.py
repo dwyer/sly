@@ -3,7 +3,7 @@ import logging
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+# logger.setLevel(logging.DEBUG)
 
 class Symbol: pass
 class AcceptSymbol(Symbol): pass
@@ -14,18 +14,25 @@ ACCEPT_SYMBOL = '$accept'
 END_SYMBOL = '$end'
 EMPTY_SYMBOL = '%empty'
 
-ACCEPT_ACTION = 'action'
+ACCEPT_ACTION = 'accept'
 REDUCE_ACTION = 'reduce'
 SHIFT_ACTION = 'shift'
 
 
 class Parser(object):
 
-    def __init__(self, grammar, start=None, lexer=None, in_=None):
-        self.start = start or (grammar[0][0] if grammar else None)
-        self.grammar = [(ACCEPT_SYMBOL, (self.start, END_SYMBOL), None)]
-        for nt, omega, aux in grammar:
-            self.grammar.append((nt, tuple(omega), aux))
+    def __init__(self, grammar, start, lexer=None, in_=None):
+        if isinstance(grammar, list):
+            self.start = start or (grammar[0][0] if grammar else None)
+            self.grammar = [(ACCEPT_SYMBOL, (self.start, END_SYMBOL), None)]
+            for nt, omega, aux in grammar:
+                self.grammar.append((nt, tuple(omega), aux))
+        elif isinstance(grammar, dict):
+            self.start = start or (grammar.keys()[0] if grammar else None)
+            self.grammar = [(ACCEPT_SYMBOL, (self.start, END_SYMBOL), None)]
+            for nt, rules in grammar.items():
+                for omega, action in rules:
+                    self.grammar.append((nt, tuple(omega), action))
         self.rules = []
         self.rules_lookup = {}
         for nt, omega, _ in self.grammar:
@@ -33,61 +40,74 @@ class Parser(object):
             self.rules.append((nt, omega))
         self._lexer = lexer
         self.in_ = in_ or ''
+        self._lval = None
         self._text = ''
         self.column = 0
         self.leng = 0
         self.lineno = 0
-        self.lval = None
         self.ssp = []
         self.vsp = []
         self.token = None
+        self.state = 0
 
-    def action(self, i, x):
-        action = {}
-        for nt, a, b in self.states[i]:
-            if nt == ACCEPT_SYMBOL and not b and x == END_SYMBOL:
-                action[ACCEPT_ACTION] = True
-            elif not b and x in self.follow(nt):
-                if REDUCE_ACTION in action:
-                    logger.error('reduce/reduce conflict')
-                    exit(1)
-                action[REDUCE_ACTION] = self.rules_lookup[(nt, a)]
-            elif b and b[0] == x:
-                if SHIFT_ACTION in action:
-                    logger.error('shift/shift conflict')
-                    exit(1)
-                action[SHIFT_ACTION] = True
-        return action
+    def action(self, si, x):
+        if not hasattr(self, '_action'):
+            self._action = []
+            for k, items in enumerate(self.states):
+                row = {}
+                self._action.append(row)
+                for i, j in items:
+                    nt, g = self.rules[i]
+                    a = g[:j]
+                    b = g[j:]
+                    if nt == ACCEPT_SYMBOL and not b:
+                        row[END_SYMBOL] = {ACCEPT_ACTION: True}
+                    elif not b:
+                        for s in self.follow(nt):
+                            if s not in row:
+                                row[s] = {}
+                            elif REDUCE_ACTION in row[s]:
+                                logger.error('reduce/reduce conflict')
+                                exit(1)
+                            row[s][REDUCE_ACTION] = self.rules_lookup[(nt, a)]
+                    else:
+                        s = b[0]
+                        if s not in row:
+                            row[s] = {}
+                        row[s][SHIFT_ACTION] = True
+        return self._action[si].get(x, {})
 
-    def closure(self, i):
-        j = list(i)
+    def closure(self, si):
+        sj = list(si)
         while 1:
             done = True
-            for _, _, beta in j:
-                for nt, omega in self.rules:
-                    if beta and beta[0] == nt:
-                        item = (nt, (), omega)
-                        if item not in j:
-                            j.append(item)
+            for i, j in sj:
+                beta = self.rules[i][1][j:]
+                if not beta:
+                    continue
+                s = beta[0]
+                for k, (nt, _) in enumerate(self.rules):
+                    if s == nt:
+                        item = (k, 0)
+                        if item not in sj:
+                            sj.append(item)
                             done = False
             if done:
                 break
-        return j
+        return sj
 
-    def get_goto(self, I, x):
-        J = []
-        for n, p in self.items:
-            nt, rule = self.rules[n]
-            alpha = rule[:p]
-            if not alpha:
+    def get_goto(self, si, x):
+        sj = []
+        for i, j in self.items:
+            if not j:
                 continue
-            beta = rule[p:]
-            if x == alpha[-1] and (nt, alpha[:-1], (x,) + beta) in I:
-                J.append((nt, alpha, beta))
-        return self.closure(J)
+            if x == self.rules[i][1][j-1] and (i, j-1) in si:
+                sj.append((i, j))
+        return self.closure(sj)
 
     def error(self):
-        logger.error('syntax error')
+        logger.error('syntax error at %d:%d %r', self.lineno, self.column,
+                     self.text)
         exit(1)
 
     def first(self, x):
@@ -118,6 +138,7 @@ class Parser(object):
     def follow(self, x):
         if not hasattr(self, '_follow'):
             self._follow = {}
+            self._follow[ACCEPT_SYMBOL] = {END_SYMBOL}
             for nt, rule in self.rules:
                 if nt not in self._follow:
                     self._follow[nt] = set()
@@ -133,13 +154,26 @@ class Parser(object):
                             self._follow[s].difference({EMPTY_SYMBOL})
                     else:
                         self._follow[s].add(t)
+            done = False
+            while not done:
+                done = True
+                for nt, rule in self.rules:
+                    if not rule:
+                        continue
+                    s = rule[-1]
+                    if s not in self.nonterminals:
+                        continue
+                    for t in self._follow[nt]:
+                        if t not in self._follow[s]:
+                            self._follow[s].add(t)
+                            done = False
         return self._follow[x]
 
     @property
     def items(self):
         if not hasattr(self, '_items'):
             self._items = []
-            for i, (nt, rule) in enumerate(self.rules):
+            for i, (_, rule) in enumerate(self.rules):
                 for j in xrange(len(rule) + 1):
                     self._items.append((i, j))
         return self._items
@@ -162,21 +196,32 @@ class Parser(object):
                     self._nonterminals.append(nt)
         return self._nonterminals
 
-    def parse(self, start=None):
-        if start is None:
-            start = ACCEPT_SYMBOL
-        logger.debug('parse(%r)', start)
+    def parse(self):
         self.token = self.lex()
-        self.push(0)
+        self.push()
         while True:
-            action = self.action(self.ssp[-1], self.token)
+            logger.debug('token = %r', self.token)
+            logger.debug('ssp = %r', self.ssp)
+            logger.debug('vsp = %r', self.vsp)
+            s = self.ssp[-1]
+            logger.debug('state %d = %r', s, self.states[s])
+            for i, j in sorted(self.states[s]):
+                nt, rule = self.rules[i]
+                logger.debug('\t%d %r -> %s . %s', i, nt,
+                             ' '.join(map(repr, rule[:j])),
+                             ' '.join(map(repr, rule[j:])))
+            logger.debug('action[%r, %r]', self.state, self.token)
+            action = self.action(self.state, self.token)
+            logger.debug('action[%r, %r] = %r', self.state, self.token, action)
             if ACCEPT_ACTION in action:
                 return
             elif REDUCE_ACTION in action:
                 n = action[REDUCE_ACTION]
+                logger.debug('reduce by rule %d', n)
                 nt, alpha, action = self.grammar[n]
                 p = len(alpha)
                 vsp = self.vsp[-p:] if p else []
+                logger.debug('vsp = %r', vsp)
                 tmp = self.lval
                 if action:
                     self.lval = action(vsp)
@@ -185,45 +230,33 @@ class Parser(object):
                 else:
                     self.lval = None
                 self.pop(p)
-                self.push(self.goto[self.ssp[-1]][nt])
+                logger.debug('follow[%r] = %r', nt, self.follow(nt))
+                self.state = self.goto[self.state][nt]
+                self.push()
                 self.lval = tmp
             elif SHIFT_ACTION in action:
-                self.push(self.goto[self.ssp[-1]][self.token])
+                self.state = self.goto[self.state][self.token]
+                self.push()
                 self.token = self.lex()
             else:
                 self.error()
 
     def pop(self, n):
         for _ in xrange(n):
-            self.ssp.pop()
-            self.vsp.pop()
+            s = self.ssp.pop()
+            v = self.vsp.pop()
+            logger.debug('popping state = %r, value = %r', s, v)
+        self.state = self.ssp[-1]
 
-    def push(self, symbol):
-        logger.debug('pushing %r %r', symbol, self.lval)
-        self.ssp.append(symbol)
+    def push(self):
+        logger.debug('pushing state = %r, value = %r', self.state, self.lval)
+        self.ssp.append(self.state)
         self.vsp.append(self.lval)
-
-    def reduce(self, n):
-        logger.debug('reduce(%r)', n)
-        nt, alpha, action = self.grammar[n]
-        p = len(alpha)
-        vsp = self.vsp[-p:] if p else []
-        tmp = self.lval
-        if action:
-            self.lval = action(vsp)
-        elif vsp:
-            self.lval = vsp[0]
-        else:
-            self.lval = None
-        self.pop(p)
-        self.push(nt)
-        self.lval = tmp
 
     @property
     def states(self):
         if not hasattr(self, '_states'):
-            self._states = \
-                [self.closure([(ACCEPT_SYMBOL, (), (self.start, END_SYMBOL))])]
+            self._states = [self.closure([(0, 0)])]
             self.goto = {}
             while True:
                 done = True
@@ -273,3 +306,11 @@ class Parser(object):
         self.leng = len(text)
 
     text = property(get_text, set_text)
+
+    def get_lval(self):
+        return self._lval
+
+    def set_lval(self, lval):
+        self._lval = lval
+
+    lval = property(get_lval, set_lval)
