@@ -3,7 +3,6 @@ import logging
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
-# logger.setLevel(logging.DEBUG)
 
 class Symbol: pass
 class AcceptSymbol(Symbol): pass
@@ -48,7 +47,7 @@ class Parser(object):
         self.ssp = []
         self.vsp = []
         self.token = None
-        self.state = 0
+        self._debug = False
 
     def action(self, si, x):
         if not hasattr(self, '_action'):
@@ -104,11 +103,6 @@ class Parser(object):
             if x == self.rules[i][1][j-1] and (i, j-1) in si:
                 sj.append((i, j))
         return self.closure(sj)
-
-    def error(self):
-        logger.error('syntax error at %d:%d %r', self.lineno, self.column,
-                     self.text)
-        exit(1)
 
     def first(self, x):
         if not hasattr(self, '_first'):
@@ -198,21 +192,23 @@ class Parser(object):
 
     def parse(self):
         self.token = self.lex()
-        self.push()
+        self.push(0)
         while True:
             logger.debug('token = %r', self.token)
             logger.debug('ssp = %r', self.ssp)
             logger.debug('vsp = %r', self.vsp)
             s = self.ssp[-1]
             logger.debug('state %d = %r', s, self.states[s])
-            for i, j in sorted(self.states[s]):
-                nt, rule = self.rules[i]
-                logger.debug('\t%d %r -> %s . %s', i, nt,
-                             ' '.join(map(repr, rule[:j])),
-                             ' '.join(map(repr, rule[j:])))
-            logger.debug('action[%r, %r]', self.state, self.token)
-            action = self.action(self.state, self.token)
-            logger.debug('action[%r, %r] = %r', self.state, self.token, action)
+            if self.debug:
+                for i, j in sorted(self.states[s]):
+                    nt, rule = self.rules[i]
+                    logger.debug('\t%d %r -> %s . %s', i, nt,
+                                 ' '.join(map(repr, rule[:j])),
+                                 ' '.join(map(repr, rule[j:])))
+            logger.debug('action[%r, %r]', self.ssp[-1], self.token)
+            action = self.action(self.ssp[-1], self.token)
+            logger.debug('action[%r, %r] = %r', self.ssp[-1], self.token,
+                         action)
             if ACCEPT_ACTION in action:
                 return
             elif REDUCE_ACTION in action:
@@ -231,26 +227,25 @@ class Parser(object):
                     self.lval = None
                 self.pop(p)
                 logger.debug('follow[%r] = %r', nt, self.follow(nt))
-                self.state = self.goto[self.state][nt]
-                self.push()
+                self.push(self.goto[self.ssp[-1]][nt])
                 self.lval = tmp
             elif SHIFT_ACTION in action:
-                self.state = self.goto[self.state][self.token]
-                self.push()
+                self.push(self.goto[self.ssp[-1]][self.token])
                 self.token = self.lex()
             else:
-                self.error()
+                logger.error('syntax error at %d:%d %r', self.lineno,
+                             self.column, self.text)
+                exit(1)
 
     def pop(self, n):
         for _ in xrange(n):
             s = self.ssp.pop()
             v = self.vsp.pop()
             logger.debug('popping state = %r, value = %r', s, v)
-        self.state = self.ssp[-1]
 
-    def push(self):
-        logger.debug('pushing state = %r, value = %r', self.state, self.lval)
-        self.ssp.append(self.state)
+    def push(self, state):
+        logger.debug('pushing state = %r, value = %r', state, self.lval)
+        self.ssp.append(state)
         self.vsp.append(self.lval)
 
     @property
@@ -292,9 +287,6 @@ class Parser(object):
                         self._terminals.append(s)
         return self._terminals
 
-    def get_text(self):
-        return self._text
-
     def set_text(self, text):
         for c in self._text:
             if c == '\n':
@@ -305,12 +297,18 @@ class Parser(object):
         self._text = text
         self.leng = len(text)
 
-    text = property(get_text, set_text)
-
-    def get_lval(self):
-        return self._lval
+    text = property(lambda self: self._text, set_text)
 
     def set_lval(self, lval):
         self._lval = lval
 
-    lval = property(get_lval, set_lval)
+    lval = property(lambda self: self._lval, set_lval)
+
+    def set_debug(self, debug):
+        self._debug = debug
+        if self._debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.WARNING)
+
+    debug = property(lambda self: self._debug, set_debug)
