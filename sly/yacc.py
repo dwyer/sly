@@ -233,9 +233,8 @@ class Parser(object):
                 self.push(self.goto[self.ssp[-1]][self.token])
                 self.token = self.lex()
             else:
-                logger.error('syntax error at %d:%d %r', self.lineno,
-                             self.column, self.text)
-                exit(1)
+                raise SyntaxError, 'syntax error at %d:%d %r' % (
+                    self.lineno, self.column, self.text)
 
     def pop(self, n):
         for _ in xrange(n):
