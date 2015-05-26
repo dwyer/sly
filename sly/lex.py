@@ -12,16 +12,15 @@ def generate(tokens):
     def lexer(yy):
         while yy.in_:
             match = None
-            for pattern, action in tokens:
+            for pattern, token in tokens:
                 match = pattern.match(yy.in_)
                 if not match:
                     continue
                 yy.text = match.group(0)
                 yy.in_ = yy.in_[len(yy.text):]
-                if callable(action):
-                    token = action(yy)
-                else:
-                    token = action
+                if callable(token):
+                    token = token(yy)
+                elif token:
                     yy.lval = yy.text
                 if token:
                     return token
