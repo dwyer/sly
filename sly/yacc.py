@@ -48,6 +48,7 @@ class Parser(object):
         self.vsp = []
         self.token = None
         self._debug = False
+        self._items_by_left_symbol = {}
 
     def action(self, si, x):
         if not hasattr(self, '_action'):
@@ -78,9 +79,11 @@ class Parser(object):
 
     def closure(self, si):
         sj = list(si)
-        while 1:
-            done = True
-            for i, j in sj:
+        a = 0
+        b = len(sj)
+        while a < b:
+            for i, j in sj[a:]:
+                a += 1
                 beta = self.rules[i][1][j:]
                 if not beta:
                     continue
@@ -90,17 +93,24 @@ class Parser(object):
                         item = (k, 0)
                         if item not in sj:
                             sj.append(item)
-                            done = False
-            if done:
-                break
-        return sj
+                            b += 1
+            a += 1
+        return frozenset(sj)
 
     def get_goto(self, si, x):
         sj = []
-        for i, j in self.items:
-            if not j:
-                continue
-            if x == self.rules[i][1][j-1] and (i, j-1) in si:
+        if not self._items_by_left_symbol:
+            for i, j in self.items:
+                if not j:
+                    continue
+                s = self.rules[i][1][j-1]
+                if s not in self._items_by_left_symbol:
+                    self._items_by_left_symbol[s] = set()
+                self._items_by_left_symbol[s].add((i, j))
+        if x not in self._items_by_left_symbol:
+            return frozenset()
+        for i, j in self._items_by_left_symbol[x]:
+            if (i, j-1) in si:
                 sj.append((i, j))
         return self.closure(sj)
 
@@ -250,24 +260,29 @@ class Parser(object):
     @property
     def states(self):
         if not hasattr(self, '_states'):
+            logger.debug('creating states')
             self._states = [self.closure([(0, 0)])]
-            self.goto = {}
-            while True:
-                done = True
-                for i, items in enumerate(self._states):
-                    if i not in self.goto:
-                        self.goto[i] = {}
+            self.goto = []
+            indices = {}
+            i = 0
+            n = len(self._states)
+            while i < len(self._states):
+                logger.debug('processing states %d to %d', i, len(self._states))
+                for i in xrange(i, len(self._states)):
+                    items = self._states[i]
+                    logger.debug('processing state %d: %r', i, items)
+                    self.goto.append({})
                     for s in self.symbols:
                         goto = self.get_goto(items, s)
-                        if goto:
-                            try:
-                                self.goto[i][s] = self._states.index(goto)
-                            except ValueError:
-                                self.goto[i][s] = len(self._states)
-                                self._states.append(goto)
-                                done = False
-                if done:
-                    break
+                        if not goto:
+                            continue
+                        if goto in indices:
+                            self.goto[i][s] = indices[goto]
+                        else:
+                            indices[goto] = len(self._states)
+                            self.goto[i][s] = indices[goto]
+                            self._states.append(goto)
+                i += 1
         return self._states
 
     @property
