@@ -17,8 +17,12 @@ def generate(tokens):
                 if not match:
                     continue
                 yy.text = match.group(0)
-                yy.in_ = yy.in_[yy.leng:]
-                token = action(yy) if callable(action) else action
+                yy.in_ = yy.in_[len(yy.text):]
+                if callable(action):
+                    token = action(yy)
+                else:
+                    token = action
+                    yy.lval = yy.text
                 if token:
                     return token
                 break # if token is None, get another
