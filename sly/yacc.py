@@ -21,166 +21,206 @@ SHIFT_ACTION = 'shift'
 class Parser(object):
 
     def __init__(self, grammar, start, lexer=None, in_=None):
-        if isinstance(grammar, list):
-            self.start = start or (grammar[0][0] if grammar else None)
-            self.grammar = [(ACCEPT_SYMBOL, (self.start, END_SYMBOL), None)]
-            for nt, omega, aux in grammar:
-                self.grammar.append((nt, tuple(omega), aux))
-        elif isinstance(grammar, dict):
-            self.start = start or (grammar.keys()[0] if grammar else None)
-            self.grammar = [(ACCEPT_SYMBOL, (self.start, END_SYMBOL), None)]
-            for nt, rules in grammar.items():
-                for omega, action in rules:
-                    self.grammar.append((nt, tuple(omega), action))
-        self.rules = []
-        self.rules_lookup = {}
-        for nt, omega, _ in self.grammar:
-            self.rules_lookup[(nt, omega)] = len(self.rules)
-            self.rules.append((nt, omega))
+        self.start = start
+        self.set_grammar(grammar)
         self._lexer = lexer
         self.in_ = in_ or ''
         self._lval = None
         self._text = ''
         self.column = 0
-        self.leng = 0
         self.lineno = 0
         self.ssp = []
         self.vsp = []
         self.token = None
         self._debug = False
-        self._items_by_left_symbol = {}
 
-    def action(self, si, x):
-        if not hasattr(self, '_action'):
-            self._action = []
-            for k, items in enumerate(self.states):
-                row = {}
-                self._action.append(row)
-                for i, j in items:
-                    nt, g = self.rules[i]
-                    a = g[:j]
-                    b = g[j:]
-                    if nt == ACCEPT_SYMBOL and not b:
-                        row[END_SYMBOL] = {ACCEPT_ACTION: True}
-                    elif not b:
-                        for s in self.follow(nt):
-                            if s not in row:
-                                row[s] = {}
-                            elif REDUCE_ACTION in row[s]:
-                                logger.error('reduce/reduce conflict')
-                                exit(1)
-                            row[s][REDUCE_ACTION] = self.rules_lookup[(nt, a)]
+    def set_grammar(self, grammar):
+        if ACCEPT_SYMBOL in grammar:
+            logger.error('The nonterminal %r is reserved', ACCEPT_SYMBOL)
+        self.grammar = grammar
+        self.build_rules()
+        self.build_states()
+        self.build_first_table()
+        self.build_follow_table()
+        self.build_action_table()
+
+    def build_rules(self):
+        logger.debug('building rules, items, and symbol tables')
+        self.rules = []
+        self.rule_indices = {}
+        self.items = []
+        self.items_by_symbol = {}
+        self.reducers = []
+        augmented_grammar = dict(self.grammar)
+        # FIXME: do we really need END_SYMBOL?
+        # augmented_grammar[ACCEPT_SYMBOL] = [([self.start, END_SYMBOL], None)]
+        augmented_grammar[ACCEPT_SYMBOL] = [([self.start], None)]
+        self.nonterminals = set(augmented_grammar.keys())
+        self.symbols = set(self.nonterminals)
+        i = 0
+        for a in [ACCEPT_SYMBOL] + self.grammar.keys():
+            self.rule_indices[a] = []
+            for gamma, reducer in augmented_grammar[a]:
+                gamma = tuple(gamma)
+                rule = (a, gamma)
+                self.rule_indices[a].append(i)
+                self.rule_indices[rule] = i
+                self.rules.append(rule)
+                self.reducers.append(reducer)
+                for j, s in enumerate(gamma):
+                    self.items.append((i, j))
+                    self.symbols.add(s)
+                    if s not in self.items_by_symbol:
+                        self.items_by_symbol[s] = set()
+                    self.items_by_symbol[s].add((i, j))
+                self.items.append((i, len(gamma)))
+                i += 1
+        self.terminals = self.symbols.difference(self.nonterminals)
+
+    def build_states(self):
+        logger.debug('building state and goto tables')
+        self.states = [self.closure([(0, 0)])]
+        self.goto = []
+        indices = {}
+        i = 0
+        while i < len(self.states):
+            logger.debug('processing states %d to %d', i, len(self.states))
+            for i in xrange(i, len(self.states)):
+                items = self.states[i]
+                logger.debug('processing state %d: %r', i, items)
+                self.goto.append({})
+                for s in self.symbols:
+                    state = self.create_state(items, s)
+                    if not state:
+                        continue
+                    if state in indices:
+                        self.goto[i][s] = indices[state]
                     else:
-                        s = b[0]
+                        indices[state] = len(self.states)
+                        self.goto[i][s] = indices[state]
+                        self.states.append(state)
+            i += 1
+
+    def create_state(self, items, s):
+        state = []
+        if s not in self.items_by_symbol:
+            return frozenset()
+        for x, y in self.items_by_symbol[s]:
+            if (x, y) in items:
+                state.append((x, y + 1))
+        return self.closure(state)
+
+    def build_first_table(self):
+        self.first = {}
+        for s in self.terminals:
+            self.first[s] = {s}
+        for s in self.nonterminals:
+            self.create_first(s)
+
+    def create_first(self, s):
+        if s not in self.first:
+            self.first[s] = set()
+            for i in self.rule_indices[s]:
+                _, gamma = self.rules[i]
+                if not gamma:
+                    self.first[s].add(EMPTY_SYMBOL)
+                for t in gamma:
+                    if t not in self.nonterminals:
+                        self.first[s].add(t)
+                        break
+                    if s == t:
+                        second = self.first[s]
+                    else:
+                        second = self.create_first(t)
+                        self.first[s] |= second
+                    if EMPTY_SYMBOL not in second:
+                        break
+        return self.first[s]
+
+    def build_follow_table(self):
+        logger.debug('building follow table')
+        self.follow = {}
+        self.follow[ACCEPT_SYMBOL] = {END_SYMBOL}
+        for nt, rule in self.rules:
+            if nt not in self.follow:
+                self.follow[nt] = set()
+            for i in xrange(len(rule) - 1):
+                s = rule[i]
+                t = rule[i+1]
+                if s not in self.follow:
+                    self.follow[s] = set()
+                if t in self.nonterminals:
+                    self.follow[s] |= self.first[t] - {EMPTY_SYMBOL}
+                else:
+                    self.follow[s].add(t)
+        done = False
+        while not done:
+            done = True
+            for nt, rule in self.rules:
+                if not rule:
+                    continue
+                s = rule[-1]
+                if s not in self.nonterminals:
+                    continue
+                for t in self.follow[nt]:
+                    if t not in self.follow[s]:
+                        self.follow[s].add(t)
+                        done = False
+
+    def build_action_table(self):
+        self.action = []
+        for items in self.states:
+            row = {}
+            self.action.append(row)
+            for x, y in items:
+                a, gamma = self.rules[x]
+                alpha = gamma[:y]
+                beta = gamma[y:]
+                if a == ACCEPT_SYMBOL and not beta:
+                    row[END_SYMBOL] = {ACCEPT_ACTION: True}
+                elif not beta:
+                    for s in self.follow[a]:
                         if s not in row:
                             row[s] = {}
-                        row[s][SHIFT_ACTION] = True
-        return self._action[si].get(x, {})
+                        elif REDUCE_ACTION in row[s]:
+                            # TODO: show a better error message
+                            logger.error('reduce/reduce conflict')
+                            r1 = self.rules[row[s][REDUCE_ACTION]]
+                            r2 = self.rules[self.rule_indices[(a, alpha)]]
+                            for b, gamma in [r1, r2]:
+                                logger.error('%s -> %s', b,
+                                             ' '.join(repr(s) if s in
+                                                      self.terminals else s
+                                                      for s in gamma))
+                            exit(1)
+                        row[s][REDUCE_ACTION] = self.rule_indices[(a, alpha)]
+                else:
+                    s = beta[0]
+                    if s not in row:
+                        row[s] = {}
+                    row[s][SHIFT_ACTION] = True
 
-    def closure(self, si):
-        sj = list(si)
-        a = 0
-        b = len(sj)
-        while a < b:
-            for i, j in sj[a:]:
-                a += 1
-                beta = self.rules[i][1][j:]
+    def closure(self, items):
+        closure_list = list(items)
+        closure_set = set(items)
+        i = 0
+        while i < len(closure_list):
+            for x, y in closure_list[i:]:
+                i += 1
+                beta = self.rules[x][1][y:]
                 if not beta:
                     continue
                 s = beta[0]
-                for k, (nt, _) in enumerate(self.rules):
-                    if s == nt:
-                        item = (k, 0)
-                        if item not in sj:
-                            sj.append(item)
-                            b += 1
-            a += 1
-        return frozenset(sj)
-
-    def get_goto(self, si, x):
-        sj = []
-        if not self._items_by_left_symbol:
-            for i, j in self.items:
-                if not j:
+                if s not in self.nonterminals:
                     continue
-                s = self.rules[i][1][j-1]
-                if s not in self._items_by_left_symbol:
-                    self._items_by_left_symbol[s] = set()
-                self._items_by_left_symbol[s].add((i, j))
-        if x not in self._items_by_left_symbol:
-            return frozenset()
-        for i, j in self._items_by_left_symbol[x]:
-            if (i, j-1) in si:
-                sj.append((i, j))
-        return self.closure(sj)
-
-    def first(self, x):
-        if not hasattr(self, '_first'):
-            self._first = {}
-        if x not in self._first:
-            self._first[x] = set()
-            if x not in self.nonterminals:
-                self._first[x].add(x)
-                return self._first[x]
-            rules = []
-            for nt, rule in self.rules:
-                if nt == x:
-                    rules.append(rule)
-                    if not rule:
-                        self._first[x].add(EMPTY_SYMBOL)
-            for rule in rules:
-                for s in rule:
-                    if s not in self.nonterminals:
-                        self._first[x].add(s)
-                        break
-                    second = self._first[x] if s == x else self.first(s)
-                    self._first[x] = self._first[x].union(second)
-                    if EMPTY_SYMBOL not in second:
-                        break
-        return self._first[x]
-
-    def follow(self, x):
-        if not hasattr(self, '_follow'):
-            self._follow = {}
-            self._follow[ACCEPT_SYMBOL] = {END_SYMBOL}
-            for nt, rule in self.rules:
-                if nt not in self._follow:
-                    self._follow[nt] = set()
-                for i in xrange(len(rule) - 1):
-                    s = rule[i]
-                    t = rule[i+1]
-                    if s not in self._follow:
-                        self._follow[s] = set()
-                    if t in self.nonterminals:
-                        self._follow[s] = \
-                            self._follow[s].union(self.first(t))
-                        self._follow[s] = \
-                            self._follow[s].difference({EMPTY_SYMBOL})
-                    else:
-                        self._follow[s].add(t)
-            done = False
-            while not done:
-                done = True
-                for nt, rule in self.rules:
-                    if not rule:
-                        continue
-                    s = rule[-1]
-                    if s not in self.nonterminals:
-                        continue
-                    for t in self._follow[nt]:
-                        if t not in self._follow[s]:
-                            self._follow[s].add(t)
-                            done = False
-        return self._follow[x]
-
-    @property
-    def items(self):
-        if not hasattr(self, '_items'):
-            self._items = []
-            for i, (_, rule) in enumerate(self.rules):
-                for j in xrange(len(rule) + 1):
-                    self._items.append((i, j))
-        return self._items
+                for x in self.rule_indices[s]:
+                    item = (x, 0)
+                    if item not in closure_set:
+                        closure_list.append(item)
+                        closure_set.add(item)
+            i += 1
+        del closure_list
+        return frozenset(closure_set)
 
     def lex(self):
         if self._lexer:
@@ -190,15 +230,6 @@ class Parser(object):
                 self.token = END_SYMBOL
             logger.debug('Next token is: %r', self.token)
         return self.token
-
-    @property
-    def nonterminals(self):
-        if not hasattr(self, '_nonterminals'):
-            self._nonterminals = []
-            for nt, _ in self.rules:
-                if nt not in self._nonterminals:
-                    self._nonterminals.append(nt)
-        return self._nonterminals
 
     def parse(self):
         self.token = self.lex()
@@ -216,7 +247,11 @@ class Parser(object):
                                  ' '.join(map(repr, rule[:j])),
                                  ' '.join(map(repr, rule[j:])))
             logger.debug('action[%r, %r]', self.ssp[-1], self.token)
-            action = self.action(self.ssp[-1], self.token)
+            try:
+                action = self.action[self.ssp[-1]][self.token]
+            except KeyError:
+                raise SyntaxError, 'syntax error at %d:%d %r' % (
+                    self.lineno, self.column, self.text)
             logger.debug('action[%r, %r] = %r', self.ssp[-1], self.token,
                          action)
             if ACCEPT_ACTION in action:
@@ -224,27 +259,25 @@ class Parser(object):
             elif REDUCE_ACTION in action:
                 n = action[REDUCE_ACTION]
                 logger.debug('reduce by rule %d', n)
-                nt, alpha, action = self.grammar[n]
+                nt, alpha = self.rules[n]
+                reducer = self.reducers[n]
                 p = len(alpha)
                 vsp = self.vsp[-p:] if p else []
                 logger.debug('vsp = %r', vsp)
                 tmp = self.lval
-                if action:
-                    self.lval = action(vsp)
+                if reducer:
+                    self.lval = reducer(vsp)
                 elif vsp:
                     self.lval = vsp[0]
                 else:
                     self.lval = None
                 self.pop(p)
-                logger.debug('follow[%r] = %r', nt, self.follow(nt))
+                logger.debug('follow[%r] = %r', nt, self.follow[nt])
                 self.push(self.goto[self.ssp[-1]][nt])
                 self.lval = tmp
             elif SHIFT_ACTION in action:
                 self.push(self.goto[self.ssp[-1]][self.token])
                 self.token = self.lex()
-            else:
-                raise SyntaxError, 'syntax error at %d:%d %r' % (
-                    self.lineno, self.column, self.text)
 
     def pop(self, n):
         for _ in xrange(n):
@@ -257,50 +290,6 @@ class Parser(object):
         self.ssp.append(state)
         self.vsp.append(self.lval)
 
-    @property
-    def states(self):
-        if not hasattr(self, '_states'):
-            logger.debug('creating states')
-            self._states = [self.closure([(0, 0)])]
-            self.goto = []
-            indices = {}
-            i = 0
-            n = len(self._states)
-            while i < len(self._states):
-                logger.debug('processing states %d to %d', i, len(self._states))
-                for i in xrange(i, len(self._states)):
-                    items = self._states[i]
-                    logger.debug('processing state %d: %r', i, items)
-                    self.goto.append({})
-                    for s in self.symbols:
-                        goto = self.get_goto(items, s)
-                        if not goto:
-                            continue
-                        if goto in indices:
-                            self.goto[i][s] = indices[goto]
-                        else:
-                            indices[goto] = len(self._states)
-                            self.goto[i][s] = indices[goto]
-                            self._states.append(goto)
-                i += 1
-        return self._states
-
-    @property
-    def symbols(self):
-        if not hasattr(self, '_symbols'):
-            self._symbols = self.nonterminals + self.terminals
-        return self._symbols
-
-    @property
-    def terminals(self):
-        if not hasattr(self, '_terminals'):
-            self._terminals = []
-            for nt, omega in self.rules:
-                for s in omega:
-                    if s not in self.nonterminals and s not in self._terminals:
-                        self._terminals.append(s)
-        return self._terminals
-
     def set_text(self, text):
         for c in self._text:
             if c == '\n':
@@ -309,7 +298,6 @@ class Parser(object):
             else:
                 self.column += 1
         self._text = text
-        self.leng = len(text)
 
     text = property(lambda self: self._text, set_text)
 
