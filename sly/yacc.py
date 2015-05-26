@@ -218,7 +218,6 @@ class Parser(object):
                     if item not in closure_set:
                         closure_list.append(item)
                         closure_set.add(item)
-            i += 1
         del closure_list
         return frozenset(closure_set)
 
