@@ -1,5 +1,5 @@
+import logging
 import re
-import sys
 
 
 def echo(yy):
@@ -7,7 +7,15 @@ def echo(yy):
 
 
 def generate(tokens):
-    tokens = [(re.compile(pattern), action) for pattern, action in tokens]
+    _tokens = []
+    for pattern, token in tokens:
+        try:
+            pattern = re.compile(pattern)
+        except:
+            logging.error('invalid regular expression: %r', pattern)
+            exit(1)
+        _tokens.append((pattern, token))
+    tokens = _tokens
 
     def lexer(yy):
         while yy.in_:
