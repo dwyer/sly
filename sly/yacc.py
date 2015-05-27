@@ -232,36 +232,38 @@ class Parser(object):
 
     def parse(self):
         self.token = self.lex()
-        self.push(0)
+        self.ssp = []
+        self.state = 0
         while True:
             logger.debug('token = %r', self.token)
             logger.debug('ssp = %r', self.ssp)
             logger.debug('vsp = %r', self.vsp)
-            s = self.ssp[-1]
-            logger.debug('state %d = %r', s, self.states[s])
+            logger.debug('state %d = %r', self.state, self.states[self.state])
             if self.debug:
-                for i, j in sorted(self.states[s]):
-                    nt, rule = self.rules[i]
-                    logger.debug('\t%d %r -> %s . %s', i, nt,
-                                 ' '.join(map(repr, rule[:j])),
-                                 ' '.join(map(repr, rule[j:])))
-            logger.debug('action[%r, %r]', self.ssp[-1], self.token)
+                for x, y in sorted(self.states[self.state]):
+                    nt, rule = self.rules[x]
+                    logger.debug('\t%d %r -> %s . %s', x, nt,
+                                 ' '.join(map(repr, rule[:y])),
+                                 ' '.join(map(repr, rule[y:])))
+            logger.debug('action[%r, %r]', self.state, self.token)
             try:
-                action = self.action[self.ssp[-1]][self.token]
+                action = self.action[self.state][self.token]
             except KeyError:
+                logger.debug('self.action[%r] = %r', self.state,
+                             self.action[self.state])
                 raise SyntaxError, 'syntax error at %d:%d %r' % (
                     self.lineno, self.column, self.text)
-            logger.debug('action[%r, %r] = %r', self.ssp[-1], self.token,
+            logger.debug('action[%r, %r] = %r', self.state, self.token,
                          action)
             if ACCEPT_ACTION in action:
                 return
             elif REDUCE_ACTION in action:
-                n = action[REDUCE_ACTION]
-                logger.debug('reduce by rule %d', n)
-                nt, alpha = self.rules[n]
-                reducer = self.reducers[n]
-                p = len(alpha)
-                vsp = self.vsp[-p:] if p else []
+                rule = action[REDUCE_ACTION]
+                logger.debug('reduce by rule %d', rule)
+                a, alpha = self.rules[rule]
+                reducer = self.reducers[rule]
+                n = len(alpha)
+                vsp = self.vsp[-n:] if n else []
                 logger.debug('vsp = %r', vsp)
                 tmp = self.lval
                 if reducer:
@@ -270,24 +272,22 @@ class Parser(object):
                     self.lval = vsp[0]
                 else:
                     self.lval = None
-                self.pop(p)
-                logger.debug('follow[%r] = %r', nt, self.follow[nt])
-                self.push(self.goto[self.ssp[-1]][nt])
+                for _ in xrange(n):
+                    logger.debug('popping state = %r, value = %r',
+                                 self.ssp.pop(), self.vsp.pop())
+                logger.debug('follow[%r] = %r', a, self.follow[a])
+                self.state = self.goto[self.state][a]
                 self.lval = tmp
             elif SHIFT_ACTION in action:
-                self.push(self.goto[self.ssp[-1]][self.token])
+                self.state = self.goto[self.state][self.token]
                 self.token = self.lex()
 
-    def pop(self, n):
-        for _ in xrange(n):
-            s = self.ssp.pop()
-            v = self.vsp.pop()
-            logger.debug('popping state = %r, value = %r', s, v)
-
-    def push(self, state):
+    def set_state(self, state):
         logger.debug('pushing state = %r, value = %r', state, self.lval)
         self.ssp.append(state)
         self.vsp.append(self.lval)
+
+    state = property(lambda self: self.ssp[-1] if self.ssp else None, set_state)
 
     def set_text(self, text):
         for c in self._text:
