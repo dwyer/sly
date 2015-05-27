@@ -245,7 +245,6 @@ class Parser(object):
                     logger.debug('\t%d %r -> %s . %s', x, nt,
                                  ' '.join(map(repr, rule[:y])),
                                  ' '.join(map(repr, rule[y:])))
-            logger.debug('action[%r, %r]', self.state, self.token)
             try:
                 action = self.action[self.state][self.token]
             except KeyError:
@@ -260,16 +259,16 @@ class Parser(object):
             elif REDUCE_ACTION in action:
                 rule = action[REDUCE_ACTION]
                 logger.debug('reduce by rule %d', rule)
-                a, alpha = self.rules[rule]
+                a, gamma = self.rules[rule]
                 reducer = self.reducers[rule]
-                n = len(alpha)
-                vsp = self.vsp[-n:] if n else []
-                logger.debug('vsp = %r', vsp)
+                n = len(gamma)
+                values = self.vsp[-n:] if n else []
+                logger.debug('values = %r', values)
                 tmp = self.lval
                 if reducer:
-                    self.lval = reducer(vsp)
-                elif vsp:
-                    self.lval = vsp[0]
+                    self.lval = reducer(values)
+                elif values:
+                    self.lval = values[0]
                 else:
                     self.lval = None
                 for _ in xrange(n):
