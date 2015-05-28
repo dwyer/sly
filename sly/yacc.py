@@ -267,8 +267,10 @@ class Parser(object):
             try:
                 action = self.action[self.state][self.token]
             except KeyError:
-                logger.debug('self.action[%r] = %r', self.state,
+                logger.debug('action[%r] = %r', self.state,
                              self.action[self.state])
+                logger.debug('action[%r, %r] = %r', self.state, self.token,
+                             self.action[self.state].get(self.token))
                 raise SyntaxError, 'syntax error at %d:%d %r' % (
                     self.lineno, self.column, self.text)
             logger.debug('action[%r, %r] = %r', self.state, self.token,
