@@ -275,6 +275,9 @@ class Parser(object):
                          action)
             if ACCEPT_ACTION in action:
                 return
+            elif SHIFT_ACTION in action:
+                self.state = self.goto[self.state][self.token]
+                self.token = self.lex()
             elif REDUCE_ACTION in action:
                 rule = action[REDUCE_ACTION]
                 logger.debug('reduce by rule %d', rule)
@@ -296,9 +299,6 @@ class Parser(object):
                 logger.debug('follow[%r] = %r', a, self.follow[a])
                 self.state = self.goto[self.state][a]
                 self.lval = tmp
-            elif SHIFT_ACTION in action:
-                self.state = self.goto[self.state][self.token]
-                self.token = self.lex()
 
     def set_state(self, state):
         logger.debug('pushing state = %r, value = %r', state, self.lval)
