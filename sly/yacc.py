@@ -168,6 +168,7 @@ class Parser(object):
                         done = False
 
     def build_action_table(self):
+        shift_reduce_conflicts = collections.defaultdict(set)
         self.action = []
         for items in self.states:
             row = {}
@@ -193,12 +194,30 @@ class Parser(object):
                                                       self.terminals else s
                                                       for s in gamma))
                             exit(1)
+                        elif SHIFT_ACTION in row[s]:
+                            shift_reduce_conflicts[items].add(s)
                         row[s][REDUCE_ACTION] = self.rule_indices[(a, alpha)]
                 else:
                     s = beta[0]
                     if s not in row:
                         row[s] = {}
                     row[s][SHIFT_ACTION] = True
+                    if REDUCE_ACTION in row[s]:
+                        shift_reduce_conflicts[items].add(s)
+        if shift_reduce_conflicts:
+            n = sum(len(xs) for xs in shift_reduce_conflicts.values())
+            logger.warning('%d shift/reduce conflicts deteced', n)
+            if logger.level < logging.INFO:
+                logger.warning(
+                    'set yacc.logger.level = logging.INFO for more info')
+        for items, tokens in shift_reduce_conflicts.items():
+            logger.info('shift/reduce conflict with tokens %s:', list(tokens))
+            for x, y in items:
+                a, gamma = self.rules[x]
+                alpha = gamma[:y]
+                beta = gamma[y:]
+                logger.info('    %r -> %s . %s', a, ' '.join(map(repr, alpha)),
+                            ' '.join(map(repr, beta)))
 
     def closure(self, items):
         closure_list = list(items)
@@ -307,8 +326,8 @@ class Parser(object):
     def set_debug(self, debug):
         self._debug = debug
         if self._debug:
-            logger.setLevel(logging.DEBUG)
+            logger.level = logging.DEBUG
         else:
-            logger.setLevel(logging.WARNING)
+            logger.level = logging.WARNING
 
     debug = property(lambda self: self._debug, set_debug)
