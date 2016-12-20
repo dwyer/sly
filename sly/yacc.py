@@ -3,6 +3,7 @@ import logging
 
 logging.basicConfig()
 logger = logging.getLogger(__name__)
+logger.level = logging.WARNING
 
 class Symbol: pass
 class AcceptSymbol(Symbol): pass
@@ -20,8 +21,9 @@ SHIFT_ACTION = 'shift'
 
 class Parser(object):
 
-    def __init__(self, grammar, start, lexer=None, in_=None):
+    def __init__(self, grammar, start, lexer=None, in_=None, prec=None):
         self.start = start
+        self.separator = ' '
         self.set_grammar(grammar)
         self._lexer = lexer
         self.in_ = in_ or ''
@@ -32,7 +34,8 @@ class Parser(object):
         self.ssp = []
         self.vsp = []
         self.token = None
-        self._debug = False
+        self.prec = prec or []
+        self.default_reducer = lambda s: s[0] if s else None
 
     def set_grammar(self, grammar):
         if ACCEPT_SYMBOL in grammar:
@@ -43,6 +46,30 @@ class Parser(object):
         self.build_first_table()
         self.build_follow_table()
         self.build_action_table()
+        mystr = lambda x: str(x) if x in self.nonterminals else repr(x)
+        if logger.level > logging.INFO:
+            return
+        for i, items in enumerate(self.states):
+            logger.info('state %d:', i)
+            logger.info('')
+            for x, y in items:
+                a, gamma = self.rules[x]
+                alpha = ' '.join(map(mystr, gamma[:y]))
+                beta = ' '.join(map(mystr, gamma[y:]))
+                logger.info('\t%d %s -> %s . %s', x, a, alpha, beta)
+            logger.info('')
+            action_i = self.action[i]
+            for s in self.terminals:
+                if s in action_i:
+                    for action, n in action_i[s].items():
+                        if action == SHIFT_ACTION:
+                            goto = self.goto[i][s]
+                            action = '%s and go to state %d' % (action, goto)
+                        elif action == REDUCE_ACTION:
+                            a = self.rules[n][0]
+                            action = '%s with rule %d (%s)' % (action, n, a)
+                        logger.info('\taction[%d, %r] = %s', i, s, action)
+            logger.info('')
 
     def build_rules(self):
         logger.debug('building rules, items, and symbol tables')
@@ -61,6 +88,8 @@ class Parser(object):
         for a in [ACCEPT_SYMBOL] + self.grammar.keys():
             self.rule_indices[a] = []
             for gamma, reducer in augmented_grammar[a]:
+                if isinstance(gamma, str):
+                    gamma = gamma.split(self.separator)
                 gamma = tuple(gamma)
                 rule = (a, gamma)
                 self.rule_indices[a].append(i)
@@ -207,7 +236,7 @@ class Parser(object):
         if shift_reduce_conflicts:
             n = sum(len(xs) for xs in shift_reduce_conflicts.values())
             logger.warning('%d shift/reduce conflicts deteced', n)
-            if logger.level < logging.INFO:
+            if logger.level > logging.INFO:
                 logger.warning(
                     'set yacc.logger.level = logging.INFO for more info')
         for items, tokens in shift_reduce_conflicts.items():
@@ -258,7 +287,7 @@ class Parser(object):
             logger.debug('ssp = %r', self.ssp)
             logger.debug('vsp = %r', self.vsp)
             logger.debug('state %d = %r', self.state, self.states[self.state])
-            if self.debug:
+            if logger.level <= logging.DEBUG:
                 for x, y in sorted(self.states[self.state]):
                     nt, rule = self.rules[x]
                     logger.debug('\t%d %r -> %s . %s', x, nt,
@@ -284,17 +313,13 @@ class Parser(object):
                 rule = action[REDUCE_ACTION]
                 logger.debug('reduce by rule %d', rule)
                 a, gamma = self.rules[rule]
-                reducer = self.reducers[rule]
+                reducer = self.reducers[rule] or self.default_reducer
                 n = len(gamma)
                 values = self.vsp[-n:] if n else []
                 logger.debug('values = %r', values)
                 tmp = self.lval
                 if reducer:
                     self.lval = reducer(values)
-                elif values:
-                    self.lval = values[0]
-                else:
-                    self.lval = None
                 for _ in xrange(n):
                     logger.debug('popping state = %r, value = %r',
                                  self.ssp.pop(), self.vsp.pop())
@@ -324,12 +349,3 @@ class Parser(object):
         self._lval = lval
 
     lval = property(lambda self: self._lval, set_lval)
-
-    def set_debug(self, debug):
-        self._debug = debug
-        if self._debug:
-            logger.level = logging.DEBUG
-        else:
-            logger.level = logging.WARNING
-
-    debug = property(lambda self: self._debug, set_debug)
