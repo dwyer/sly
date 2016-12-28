@@ -35,7 +35,7 @@ class Parser(object):
         self.vsp = []
         self.token = None
         self.prec = prec or []
-        self.default_reducer = lambda s: s[0] if s else None
+        self.default_reducer = lambda s: s
 
     def set_grammar(self, grammar):
         if ACCEPT_SYMBOL in grammar:
