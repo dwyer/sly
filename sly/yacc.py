@@ -29,8 +29,8 @@ class Parser(object):
         self.in_ = in_ or ''
         self._lval = None
         self._text = ''
-        self.column = 0
-        self.lineno = 0
+        self.column = 1
+        self.lineno = 1
         self.ssp = []
         self.vsp = []
         self.token = None
@@ -337,7 +337,7 @@ class Parser(object):
     def set_text(self, text):
         for c in self._text:
             if c == '\n':
-                self.column = 0
+                self.column = 1
                 self.lineno += 1
             else:
                 self.column += 1
