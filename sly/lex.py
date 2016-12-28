@@ -1,16 +1,44 @@
 import logging
 import re
 
+EMBEDS_RE = re.compile(r'\{([A-Za-z]\w*)\}')
+
 
 def echo(yy):
     print yy.text
 
 
-def generate(tokens):
+def _expand_aliases(aliases):
+    lookup_table = {}
+
+    def lookup(name):
+        if name not in lookup_table:
+            pattern = aliases[name]
+            for embedded_name in EMBEDS_RE.findall(pattern):
+                pattern = pattern.replace(
+                    '{%s}' % embedded_name, lookup(embedded_name))
+            lookup_table[name] = pattern
+        return lookup_table[name]
+
+    for name, pattern in aliases.items():
+        lookup(name)
+    return lookup_table
+
+
+def _expand_pattern(pattern, aliases):
+    for name in EMBEDS_RE.findall(pattern):
+        pattern = pattern.replace('{%s}' % name, aliases[name])
+    return pattern
+
+
+def generate(tokens, aliases=None):
+    if aliases is None:
+        aliases = {}
+    aliases = _expand_aliases(aliases)
     _tokens = []
     for pattern, token in tokens:
         try:
-            pattern = re.compile(pattern)
+            pattern = re.compile(_expand_pattern(pattern, aliases))
         except:
             logging.error('invalid regular expression: %r', pattern)
             exit(1)
