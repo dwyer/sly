@@ -1,3 +1,8 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+from __future__ import unicode_literals
+
 import collections
 import logging
 
@@ -46,7 +51,7 @@ class Parser(object):
         self.build_first_table()
         self.build_follow_table()
         self.build_action_table()
-        mystr = lambda x: str(x) if x in self.nonterminals else repr(x)
+        mystr = lambda x: unicode(x) if x in self.nonterminals else repr(x)
         if logger.level > logging.INFO:
             return
         for i, items in enumerate(self.states):
@@ -88,7 +93,7 @@ class Parser(object):
         for a in [ACCEPT_SYMBOL] + self.grammar.keys():
             self.rule_indices[a] = []
             for gamma, reducer in augmented_grammar[a]:
-                if isinstance(gamma, str):
+                if isinstance(gamma, basestring):
                     gamma = gamma.split(self.separator)
                 gamma = tuple(gamma)
                 rule = (a, gamma)
